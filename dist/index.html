@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teste de Latência - Mullvad VPN</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body.dark-mode {
+            background-color: #1f2937;
+            color: #f9fafb;
+        }
+        body.dark-mode .bg-white {
+            background-color: #374151;
+        }
+        body.dark-mode .bg-gray-800 {
+            background-color: #111827;
+        }
+        body.dark-mode .text-gray-800 {
+            color: #f9fafb;
+        }
+        body.dark-mode .text-gray-900 {
+            color: #f9fafb;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 font-sans leading-normal tracking-normal">
+    <div class="container mx-auto p-6">
+        <div class="flex justify-end mb-6">
+            <button id="toggle-dark-mode" class="bg-gray-800 text-white font-bold py-2 px-4 rounded">
+                Toggle Dark Mode
+            </button>
+        </div>
+        <h1 class="text-3xl font-bold text-center text-gray-900 mb-8">Teste de Latência - Mullvad VPN</h1>
+
+        <div class="flex flex-col sm:flex-row sm:justify-between mb-6">
+            <div class="flex flex-col space-y-4 sm:space-y-0 sm:space-x-4">
+                <label for="country-filter" class="font-semibold text-lg">Filtrar por Países:</label>
+                <div id="country-filter" class="flex flex-wrap space-x-4 space-y-4">
+                    <!-- Países com checkboxes serão adicionados aqui -->
+                </div>
+            </div>
+            <div class="flex items-center space-x-4 mt-4 sm:mt-0">
+                <button id="start-test" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded">Iniciar Teste de Latência</button>
+                <label for="interval-selector" class="font-semibold">Intervalo (seg):</label>
+                <select id="interval-selector" class="block w-16 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                    <option value="0">0</option>
+                    <option value="5">5</option>
+                    <option value="10">10</option>
+                    <option value="15">15</option>
+                </select>
+                <button id="start-interval-ping" class="bg-gray-400 text-white font-bold py-2 px-4 rounded cursor-not-allowed" disabled>Iniciar Ping em Intervalo</button>
+            </div>
+        </div>
+
+        <div class="overflow-x-auto">
+            <table id="server-list" class="min-w-full bg-white shadow-md rounded-lg overflow-hidden">
+                <thead class="bg-gray-800 text-white">
+                    <tr>
+                        <th class="w-1/4 py-3 px-4 uppercase font-semibold text-sm text-left">País</th>
+                        <th class="w-1/4 py-3 px-4 uppercase font-semibold text-sm text-left">Cidade</th>
+                        <th class="w-1/4 py-3 px-4 uppercase font-semibold text-sm text-left">Hostname</th>
+                        <th class="w-1/4 py-3 px-4 uppercase font-semibold text-sm text-left">Latência (ms)</th>
+                        <th class="py-3 px-4 uppercase font-semibold text-sm text-left">Ações</th>
+                    </tr>
+                </thead>
+                <tbody id="server-body" class="text-gray-700">
+                    <!-- Os servidores serão listados aqui -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Modal para o histórico de latência -->
+    <div id="latency-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-50 flex justify-center items-center z-50">
+        <div class="bg-white p-6 rounded-lg shadow-lg max-w-lg w-full">
+            <h2 class="text-xl font-bold mb-4">Histórico de Latência - <span id="modal-country-name"></span></h2>
+            <canvas id="latency-chart"></canvas>
+            <button id="close-modal" class="mt-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded">Fechar</button>
+        </div>
+    </div>
+
+    <script>
+        let servers = [];
+        let intervalPingId = null;
+        let latencyHistory = {};
+        let modalIntervalId = null;
+
+        // Fetch the servers and populate country filter as soon as the page loads
+        window.onload = function() {
+            fetch('http://localhost:8080/mullvad-servers')
+                .then(response => response.json())
+                .then(data => {
+                    servers = data;
+                    populateCountryFilter(servers);
+                    displayServers(servers);
+                });
+        };
+
+        document.getElementById('start-test').addEventListener('click', startLatencyTest);
+        document.getElementById('interval-selector').addEventListener('change', enableIntervalButton);
+        document.getElementById('start-interval-ping').addEventListener('click', startIntervalPing);
+        document.getElementById('close-modal').addEventListener('click', closeModal);
+        document.getElementById('toggle-dark-mode').addEventListener('click', toggleDarkMode);
+
+        function startLatencyTest() {
+            const selectedCountries = getSelectedCountries();
+            const filteredServers = selectedCountries.length > 0 ? servers.filter(server => selectedCountries.includes(server.country_name)) : servers;
+            triggerPings(filteredServers);
+        }
+
+        function triggerPings(filteredServers) {
+            filteredServers.forEach(server => {
+                const row = document.querySelector(`[data-hostname="${server.hostname}"]`).closest('tr');
+                testLatency(server.hostname, latency => updateLatency(row, latency, server.country_name));
+            });
+        }
+
+        function displayServers(servers) {
+            const serverBody = document.getElementById('server-body');
+            serverBody.innerHTML = ''; // Limpa a tabela antes de preencher
+
+            servers.forEach(server => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td class="py-3 px-4">${server.country_name}</td>
+                    <td class="py-3 px-4">${server.city_name}</td>
+                    <td class="py-3 px-4">${server.hostname}</td>
+                    <td class="py-3 px-4 latency">N/A</td>
+                    <td class="py-3 px-4">
+                        <button class="ping-btn bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-1 px-2 rounded" data-hostname="${server.hostname}">Ping</button>
+                        <button class="history-btn bg-blue-600 hover:bg-blue-700 text-white font-bold py-1 px-2 rounded ml-2" data-country="${server.country_name}">Histórico</button>
+                    </td>
+                `;
+                serverBody.appendChild(row);
+
+                const pingBtn = row.querySelector('.ping-btn');
+                const historyBtn = row.querySelector('.history-btn');
+
+                pingBtn.addEventListener('click', () => {
+                    testLatency(server.hostname, latency => updateLatency(row, latency, server.country_name));
+                });
+
+                historyBtn.addEventListener('click', () => {
+                    openModal(server.country_name);
+                });
+            });
+        }
+
+        function testLatency(hostname, callback) {
+            fetch(`http://localhost:8080/ping/${hostname}.relays.mullvad.net`)
+                .then(response => response.json())
+                .then(data => {
+                    const latency = data.latency_ms;
+                    callback(latency);
+                })
+                .catch(() => {
+                    callback('Erro');
+                });
+        }
+
+        function updateLatency(row, latency, countryName) {
+            const latencyCell = row.querySelector('.latency');
+
+            if (latency !== 'Erro') {
+                latencyCell.textContent = `${latency} ms`;
+                latencyHistory[countryName] = latencyHistory[countryName] || [];
+                latencyHistory[countryName].push(latency);
+            } else {
+                if (!latencyHistory[countryName] || latencyHistory[countryName].length === 0) {
+                    latencyCell.textContent = 'Requesting latency again';
+                }
+            }
+
+            sortTable();
+        }
+
+        function sortTable() {
+            const rowsArray = Array.from(document.getElementById('server-body').rows);
+            rowsArray.sort((a, b) => {
+                const aLatency = parseInt(a.querySelector('.latency').textContent.replace(' ms', '')) || Infinity;
+                const bLatency = parseInt(b.querySelector('.latency').textContent.replace(' ms', '')) || Infinity;
+                return aLatency - bLatency;
+            });
+            rowsArray.forEach(row => document.getElementById('server-body').appendChild(row));
+        }
+
+        function populateCountryFilter(servers) {
+            const countryFilter = document.getElementById('country-filter');
+            const uniqueCountries = [...new Set(servers.map(server => server.country_name))];
+
+            uniqueCountries.forEach(country => {
+                const label = document.createElement('label');
+                label.classList.add('flex', 'items-center', 'space-x-2');
+
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.value = country;
+                checkbox.classList.add('form-checkbox', 'h-5', 'w-5', 'text-indigo-600');
+                checkbox.addEventListener('change', filterByCountry);
+
+                label.appendChild(checkbox);
+                label.appendChild(document.createTextNode(country));
+                countryFilter.appendChild(label);
+            });
+        }
+
+        function getSelectedCountries() {
+            const checkboxes = document.querySelectorAll('#country-filter input[type="checkbox"]:checked');
+            return Array.from(checkboxes).map(checkbox => checkbox.value);
+        }
+
+        function filterByCountry() {
+            const selectedCountries = getSelectedCountries();
+            const filteredServers = selectedCountries.length > 0 ? servers.filter(server => selectedCountries.includes(server.country_name)) : servers;
+            displayServers(filteredServers);
+        }
+
+        function enableIntervalButton() {
+            const startIntervalPingBtn = document.getElementById('start-interval-ping');
+            startIntervalPingBtn.classList.remove('bg-gray-400', 'cursor-not-allowed');
+            startIntervalPingBtn.classList.add('bg-indigo-600', 'hover:bg-indigo-700');
+            startIntervalPingBtn.disabled = false;
+        }
+
+        function startIntervalPing() {
+            const selectedCountries = getSelectedCountries();
+            const filteredServers = selectedCountries.length > 0 ? servers.filter(server => selectedCountries.includes(server.country_name)) : servers;
+            const interval = parseInt(document.getElementById('interval-selector').value) * 1000;
+
+            if (intervalPingId) {
+                clearInterval(intervalPingId);
+            }
+
+            intervalPingId = setInterval(() => {
+                triggerPings(filteredServers);
+            }, interval);
+        }
+
+        function openModal(countryName) {
+            const modal = document.getElementById('latency-modal');
+            const modalCountryName = document.getElementById('modal-country-name');
+            modalCountryName.textContent = countryName;
+            modal.classList.remove('hidden');
+
+            const latencyChartCanvas = document.getElementById('latency-chart').getContext('2d');
+            const latencyData = latencyHistory[countryName] || [];
+
+            const chart = new Chart(latencyChartCanvas, {
+                type: 'line',
+                data: {
+                    labels: latencyData.map((_, index) => index + 1),
+                    datasets: [{
+                        label: 'Latência (ms)',
+                        data: latencyData,
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        fill: false
+                    }]
+                },
+                options: {
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+
+            modalIntervalId = setInterval(() => {
+                if (latencyHistory[countryName] && latencyHistory[countryName].length > 0) {
+                    chart.data.datasets[0].data = latencyHistory[countryName];
+                    chart.update();
+                }
+            }, 2000);
+        }
+
+        function closeModal() {
+            const modal = document.getElementById('latency-modal');
+            modal.classList.add('hidden');
+
+            if (modalIntervalId) {
+                clearInterval(modalIntervalId);
+            }
+        }
+
+        function toggleDarkMode() {
+            document.body.classList.toggle('dark-mode');
+        }
+    </script>
+</body>
+</html>
